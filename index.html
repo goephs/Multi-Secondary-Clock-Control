@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Clock Control Panel</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <style>
+body {
+  font-size: 14px;
+  margin: 0;
+  padding: 0 1em;
+}
+#clock-selector-container {
+  margin: 20px 0;
+  font-family: sans-serif;
+}
+
+#clock-selector {
+  width: 200px;
+  height: 120px;
+  padding: 5px;
+  font-size: 14px;
+}
+
+#countdownLabel,
+#analogCountdownText {
+  font-size: 1em;
+  text-align: center;
+  margin-top: 0.5em;
+}
+    h1 {
+      color: #333;
+    }
+    button {
+      font-size: 1.2em;
+      padding: 1em 2em;
+      margin: 1em;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      background-color: #007bff;
+      color: white;
+    }
+    button:hover {
+      background-color: #0056b3;
+    }
+    #status, #feedback, #countdown, #clock {
+      margin-top: 1.5em;
+      font-weight: bold;
+      font-size: 1.2em;
+    }
+#feedback {
+  color: green;
+  white-space: pre-line; /* preserves line breaks */
+  margin-top: 1.5em;
+  font-weight: bold;
+  font-size: 1.2em;
+}
+    #countdown {
+      color: orange;
+    }
+    #clock {
+      color: #333;
+    }
+
+.buttonGrid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.75em;
+  margin: 1em auto;
+  max-width: 340px;
+}
+
+.buttonGrid button {
+  font-size: 0.85em;
+  padding: 0.75em;
+  border-radius: 6px;
+}
+
+.buttonGrid button:hover {
+  background-color: #0056b3;
+}
+
+#progressContainer {
+  display: none; /* hidden by default */
+  width: 80%;
+  height: 20px;
+  background-color: #ddd;
+  border-radius: 10px;
+  margin: 1em auto;
+  overflow: hidden;
+}
+
+#progressBar {
+  height: 100%;
+  width: 0%;
+  background-color: green;
+  transition: width 1s linear, background-color 1s linear;
+}
+
+#countdownLabel {
+  font-weight: bold;
+  font-size: 1.2em;
+  color: #333;
+  margin-top: 0.5em;
+}
+
+#cancelButton {
+  margin-top: 1em;
+  padding: 0.5em 1.5em;
+  font-size: 1em;
+  background-color: #dc3545;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+}
+#cancelButton:hover {
+  background-color: #c82333;
+}
+  </style>
+</head>
+<body>
+  <h1>Clock Control Panel</h1>
+  <div id="clock">Loading time...</div>
+  
+<div id="clock-selector-container" style="display: flex; align-items: center; gap: 10px; height: 40px;">
+  <label for="clock-selector" style="margin: 0;">Select Clock:</label>
+  <select id="clock-selector" style="height: 30px; padding: 2px 6px;">
+    <option value="E Howard Clock">E Howard Clock</option>
+    <option value="Standard Electric Clock 1">Standard Electric Clock 1</option>
+    <option value="Standard Electric Clock 2">Standard Electric Clock 2</option>
+  </select>
+</div>
+
+<div class="info-box">
+  <!-- <strong>Connected to Raspberry Pi MQTT</strong><br> -->
+  <span id="selectedClock">Selected Clock: None</span>
+</div>
+<div class="buttonGrid">
+  <button onclick="sendMinPlus()">Minute Plus</button>
+  <button onclick="sendMinMinus()">Minute Minus</button>
+  <button onclick="sendHourPlus()">Hour Plus</button>
+  <button onclick="sendHourMinus()">Hour Minus</button>
+</div>
+
+  <div id="status">Connecting to Raspberry Pi MQTT...</div>
+  <div id="feedback"></div>
+  <div id="countdown"></div>
+
+<div id="progressContainer">
+  <div id="progressBar"></div>
+</div>
+<div id="countdownLabel"></div>
+<button id="cancelButton" onclick="cancelCountdown()" style="display:none;">Cancel</button>
+
+<div style="display: flex; justify-content: center; align-items: center; flex-direction: column;">
+  <canvas id="analogClock" width="200" height="200" style="display:none;"></canvas>
+  <div id="analogCountdownText" style="margin-top: 0.5em; font-weight: bold; font-size: 1.2em;"></div>
+</div>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', () => {
+    const selector = document.getElementById('clock-selector');
+    const selectedClockSpan = document.getElementById('selectedClock');
+
+    // Set initial value
+    selectedClockSpan.textContent = `Selected Clock: ${selector.value}`;
+
+    selector.addEventListener('change', () => {
+      selectedClockSpan.textContent = `Selected Clock: ${selector.value}`;
+    });
+  });
+
+    // MQTT Setup
+	
+ function getSelectedClocks() {
+  const selector = document.getElementById('clock-selector');
+  return Array.from(selector.selectedOptions).map(opt => opt.value);
+}
+
+const options = {
+  connectTimeout: 4000,
+  clientId: 'webClient_' + Math.random().toString(16).substr(2, 8),
+  keepalive: 60,
+  clean: true,
+};
+
+// Replace 'localhost' with your Raspberry Pi's IP if accessing from another device
+const client = mqtt.connect('ws://192.168.4.29:9001', options);
+
+    const statusDiv = document.getElementById('status');
+    const feedbackDiv = document.getElementById('feedback');
+    const countdownDiv = document.getElementById('countdown');
+    const clockDiv = document.getElementById('clock');
+
+
+  let countdownInterval = null;
+  let blinkInterval = null;
+  let countdownActive = false;
+  let countdownType = null; // "minute" or "hour"
+
+
+
+    client.on('connect', () => {
+      console.log('Connected to Raspberry Pi MQTT');
+      statusDiv.textContent = 'Connected to Raspberry Pi MQTT';
+    });
+
+    client.on('error', (err) => {
+      console.error('Connection error: ', err);
+      statusDiv.textContent = 'X Connection error';
+    });
+
+    // Button Actions
+
+function sendMinPlus() {
+  const clocks = getSelectedClocks();
+  if (clocks.length === 0) {
+    feedbackDiv.textContent = 'No clocks selected';
+    return;
+  }
+
+  if (countdownActive) {
+    cancelCountdown();
+    feedbackDiv.textContent = 'Wait Time Interrupted';
+    setTimeout(() => {
+      clocks.forEach(clockId => {
+        client.publish(`${clockId}/control/minPlus`, '1');
+
+      });
+      feedbackDiv.textContent = 'Clock Ticked Forward 1 minute';
+      setTimeout(() => {
+        feedbackDiv.textContent = '';
+      }, 2000);
+    }, 1500);
+  } else {
+    clocks.forEach(clockId => {
+      client.publish(`${clockId}/control/minPlus`, '1');
+ 
+    });
+    feedbackDiv.textContent = 'Clock Ticked Forward 1 minute';
+    setTimeout(() => {
+      feedbackDiv.textContent = '';
+    }, 2000);
+  }
+}
+
+function sendMinMinus() {
+  const clocks = getSelectedClocks();
+  if (clocks.length === 0) {
+    feedbackDiv.textContent = 'No clocks selected';
+    return;
+  }
+
+  if (!countdownActive) {
+    countdownType = "minute";
+    clocks.forEach(clockId => {
+      client.publish(`${clockId}/control/minMinus`, '1');
+
+    });
+    startCountdown(60);
+  }
+}
+
+function sendHourPlus() {
+  const clocks = getSelectedClocks();
+  if (clocks.length === 0) {
+    feedbackDiv.textContent = 'No clocks selected';
+    return;
+  }
+
+  if (countdownActive) {
+    cancelCountdown();
+    feedbackDiv.textContent = 'Wait Time Interrupted';
+    setTimeout(() => {
+      feedbackDiv.textContent = 'Hour Plus triggered during countdown';
+      setTimeout(() => {
+        feedbackDiv.textContent = '';
+      }, 2000);
+    }, 1500);
+  } else {
+    feedbackDiv.textContent = 'Hour Plus in progress…';
+    clocks.forEach(clockId => {
+      client.publish(`${clockId}/control/hourPlus`, '1');
+
+    });
+
+    const progressBar = document.getElementById('progressBar');
+    const progressContainer = document.getElementById('progressContainer');
+    const countdownLabel = document.getElementById('countdownLabel');
+    const cancelButton = document.getElementById('cancelButton');
+
+    progressContainer.style.display = 'block';
+    cancelButton.style.display = 'none';
+    progressBar.style.width = '0%';
+    progressBar.style.backgroundColor = 'green';
+
+    const total = 37.2;
+    let remaining = total;
+    const interval = 1000;
+
+    const hourPlusInterval = setInterval(() => {
+      remaining -= interval / 1000;
+      const percent = ((total - remaining) / total) * 100;
+      progressBar.style.width = `${Math.min(percent, 100)}%`;
+
+      if (percent < 50) {
+        progressBar.style.backgroundColor = 'green';
+      } else if (percent < 80) {
+        progressBar.style.backgroundColor = 'orange';
+      } else {
+        progressBar.style.backgroundColor = 'red';
+      }
+
+      const mins = Math.floor(remaining / 60);
+      const secs = Math.ceil(remaining % 60);
+      countdownLabel.textContent = `Time Remaining: ${mins}:${secs.toString().padStart(2, '0')}`;
+
+      if (remaining <= 0) {
+        clearInterval(hourPlusInterval);
+        progressBar.style.width = '0%';
+        progressBar.style.backgroundColor = 'green';
+        progressContainer.style.display = 'none';
+        countdownLabel.textContent = '';
+
+        feedbackDiv.textContent = 'Hour Plus Completed';
+        setTimeout(() => {
+          feedbackDiv.textContent = '';
+        }, 2000);
+      }
+    }, interval);
+  }
+}
+
+function sendHourMinus() {
+  const clocks = getSelectedClocks();
+  if (clocks.length === 0) {
+    feedbackDiv.textContent = 'No clocks selected';
+    return;
+  }
+
+  if (!countdownActive) {
+    countdownType = "hour";
+    clocks.forEach(clockId => {
+      client.publish(`${clockId}/control/hourMinus`, '1');
+
+    });
+    startCountdown(3600);
+  }
+}
+
+function drawAnalogCountdown(mins, secs) {
+  const canvas = document.getElementById("analogClock");
+  const ctx = canvas.getContext("2d");
+  const centerX = canvas.width / 2;
+  const centerY = canvas.height / 2;
+  const radius = 85;  // scale down from 100
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  // Outer dial
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, radius, 0, 2 * Math.PI);
+  ctx.strokeStyle = "#333";
+  ctx.lineWidth = 4;
+  ctx.stroke();
+
+  // 📍 Labels: 0, 55, 50, ... 5, 0 — counterclockwise
+  ctx.font = "14px serif";
+  ctx.fillStyle = "#222";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  for (let i = 0; i <= 12; i++) {
+    const label = (i === 0 || i === 12) ? "0" : (60 - i * 5).toString();
+    const angle = ((-i * 30 - 90) * Math.PI) / 180;
+    const x = centerX + 75 * Math.cos(angle);
+    const y = centerY + 75 * Math.sin(angle);
+    ctx.fillText(label, x, y);
+  }
+
+  // Tick marks
+  for (let i = 0; i < 60; i++) {
+    const angle = ((-i * 6 - 90) * Math.PI) / 180;
+    const inner = radius - (i % 5 === 0 ? 10 : 5);
+    const x1 = centerX + inner * Math.cos(angle);
+    const y1 = centerY + inner * Math.sin(angle);
+    const x2 = centerX + radius * Math.cos(angle);
+    const y2 = centerY + radius * Math.sin(angle);
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y2);
+    ctx.strokeStyle = "#666";
+    ctx.lineWidth = i % 5 === 0 ? 2 : 1;
+    ctx.stroke();
+  }
+
+// Minute hand — starts at top, moves counterclockwise each full minute
+const fullMinutesPassed = Math.floor((60 * 60 - (mins * 60 + secs)) / 60);
+const angleMinutes = ((-fullMinutesPassed * 6 - 90) * Math.PI) / 180;
+const mx = centerX + 65 * Math.cos(angleMinutes);
+const my = centerY + 65 * Math.sin(angleMinutes);
+ctx.beginPath();
+ctx.moveTo(centerX, centerY);
+ctx.lineTo(mx, my);
+ctx.strokeStyle = "#222";
+ctx.lineWidth = 4;
+ctx.stroke();
+
+  // ⏱️ Second hand — Mondaine pause simulation
+  let drawSecs = secs;
+  if (secs === 59 || secs === 0) drawSecs = 60;
+  const angleSeconds = ((drawSecs * 6 - 90) * Math.PI) / 180;
+  const sx = centerX + 85 * Math.cos(angleSeconds);
+  const sy = centerY + 85 * Math.sin(angleSeconds);
+  ctx.beginPath();
+  ctx.moveTo(centerX, centerY);
+  ctx.lineTo(sx, sy);
+  ctx.strokeStyle = "red";
+  ctx.lineWidth = 2;
+  ctx.stroke();
+
+  // 🔴 Red dot at tip
+  ctx.beginPath();
+  ctx.arc(sx, sy, 4, 0, 2 * Math.PI);
+  ctx.fillStyle = "red";
+  ctx.fill();
+
+  // Center pin
+  ctx.beginPath();
+  ctx.arc(centerX, centerY, 4, 0, 2 * Math.PI);
+  ctx.fillStyle = "#444";
+  ctx.fill();
+}
+
+function startCountdown(seconds) {
+  let remaining = seconds;
+  const total = seconds;
+  countdownActive = true;
+  countdownType = countdownType || "minute"; // fallback
+  document.getElementById('cancelButton').style.display = 'inline-block';
+  document.getElementById('progressContainer').style.display = 'block';
+  updateCountdownDisplay(remaining, total);
+
+  if (countdownType === "hour") {
+    document.getElementById("analogClock").style.display = "block";
+    document.getElementById("progressContainer").style.display = "none";
+}
+
+countdownInterval = setInterval(() => {
+  remaining--;
+  if (remaining > 0) {
+    updateCountdownDisplay(remaining, total);
+    if (countdownType === "hour") {
+	  const mins = Math.floor(remaining / 60);
+	  const secs = remaining % 60;
+
+	  drawAnalogCountdown(mins, secs);
+	  document.getElementById("analogCountdownText").textContent = `Time Remaining: ${mins}:${secs.toString().padStart(2, '0')}`;
+}
+  } else {
+    stopCountdown();
+    publishReset();
+
+    feedbackDiv.textContent = '✅ Countdown Complete';
+    setTimeout(() => {
+      feedbackDiv.textContent = '';
+    }, 2000);
+  }
+}, 1000);
+}
+
+function publishReset() {
+  const clocks = getSelectedClocks();
+  if (clocks.length === 0) {
+    feedbackDiv.textContent = 'No clocks selected';
+    return;
+  }
+
+  clocks.forEach(clockId => {
+    if (countdownType === "minute") {
+      client.publish(`${clockId}/control/minMinus`, '0');
+    } else if (countdownType === "hour") {
+      client.publish(`${clockId}/control/hourMinus`, '0');
+    }
+  });
+}
+function updateCountdownDisplay(seconds, total) {
+  const percent = ((total - seconds) / total) * 100;
+  const progressBar = document.getElementById('progressBar');
+
+  // Update progress bar width
+  progressBar.style.width = `${percent}%`;
+
+  // Animate color from green ? orange ? red
+  if (percent < 50) {
+    progressBar.style.backgroundColor = 'green';
+  } else if (percent < 80) {
+    progressBar.style.backgroundColor = 'orange';
+  } else {
+    progressBar.style.backgroundColor = 'red';
+  }
+
+  // Update countdown label
+  const countdownLabel = document.getElementById('countdownLabel');
+  if (countdownType === "hour") {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    countdownLabel.textContent = `Waiting ${mins}:${secs.toString().padStart(2, '0')}...`;
+  } else {
+    countdownLabel.textContent = `Waiting ${seconds} seconds...`;
+  }
+}
+
+
+function stopCountdown() {
+  clearInterval(countdownInterval);
+  countdownInterval = null;
+  countdownActive = false;
+  countdownType = null;
+
+  const progressBar = document.getElementById('progressBar');
+  const progressContainer = document.getElementById('progressContainer');
+  const countdownLabel = document.getElementById('countdownLabel');
+  const cancelButton = document.getElementById('cancelButton');
+
+  document.getElementById("analogClock").style.display = "none";
+  document.getElementById("analogCountdownText").textContent = '';
+
+  progressBar.style.width = '0%';
+  progressBar.style.backgroundColor = 'green';
+  countdownLabel.textContent = '';
+  cancelButton.style.display = 'none';
+  progressContainer.style.display = 'none'; //Hide the container
+}
+
+function cancelCountdown() {
+  stopCountdown();
+
+  const selector = document.getElementById('clock-selector');
+  const selectedOptions = Array.from(selector.selectedOptions);
+
+  if (selectedOptions.length === 0) {
+    feedbackDiv.textContent = 'No clocks selected';
+    return;
+  }
+
+  selectedOptions.forEach(opt => {
+    const clockId = opt.value;
+    if (countdownType === "minute") {
+      client.publish(`${clockId}/control/minMinus`, '0');
+    } else if (countdownType === "hour") {
+      client.publish(`${clockId}/control/hourMinus`, '0');
+    }
+  });
+
+  const clockNames = selectedOptions.map(opt => `• ${opt.textContent}`).join('\n');
+  feedbackDiv.textContent = `⏹ Countdown canceled.\n🔁 Reset signal sent to:\n${clockNames}`;
+  console.log('Countdown canceled. Sent reset signal to selected clocks.');
+}
+
+  function updateClock() {
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString();
+    clockDiv.textContent = `Current Time: ${timeStr}`;
+  }
+
+
+  setInterval(updateClock, 1000);
+  updateClock(); // initial call
+  
+  const clockSelector = document.getElementById('clock-selector');
+  const selectedClockSpan = document.getElementById('selectedClock');
+
+  clockSelector.addEventListener('change', () => {
+  const selectedOption = clockSelector.options[clockSelector.selectedIndex];
+  selectedClockSpan.textContent = `Selected Clock: ${selectedOption.text}`;
+    
+    // Optional: publish to MQTT here
+    // mqttClient.publish('clock/selected', selectedOption.value);
+  });
+
+</script>
+
+
+</body>
+</html>
